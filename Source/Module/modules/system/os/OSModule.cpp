@@ -600,84 +600,33 @@ bool OSModule::PingThread::icmpPing(const String& host)
 	return success;
 
 #elif JUCE_LINUX
-    int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-    if (sock < 0) {
-        DBG("Socket creation error " << sock);
-        osModule->setWarningMessage("Could not create socket for ping check: " + String(sock), "ping");
-        return false;
-    }
 
-    osModule->clearWarning("ping");
+    constexpr int pingCount = 3;
+    int timeoutSec = std::max(1, (timeout_ms + 999) / 1000);
 
-    struct timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
+    String command = "ping -c "
+                   + String(pingCount)
+                   + " -W "
+                   + String(timeoutSec)
+                   + " "
+                   + host;
 
-    char packet[64];
-    memset(packet, 0, sizeof(packet));
+    DBG("Executing: " << command);
 
-    struct icmphdr* icmp = reinterpret_cast<struct icmphdr*>(packet);
-    icmp->type = ICMP_ECHO;
-    icmp->code = 0;
-    icmp->un.echo.id = getpid();
-    icmp->un.echo.sequence = 1;
-    icmp->checksum = 0;
+    int result = system(command.toStdString().c_str());
 
-    // Simple checksum calculation
-    unsigned short* data = reinterpret_cast<unsigned short*>(icmp);
-    int len = sizeof(struct icmphdr);
-    unsigned int sum = 0;
-    while (len > 1) {
-        sum += *data++;
-        len -= 2;
-    }
-    if (len == 1) {
-        sum += *(unsigned char*)data;
-    }
-    sum = (sum >> 16) + (sum & 0xffff);
-    sum += (sum >> 16);
-    icmp->checksum = ~sum;
-
-    struct sockaddr_in dest_addr;
-    memset(&dest_addr, 0, sizeof(dest_addr));
-    dest_addr.sin_family = AF_INET;
-    dest_addr.sin_addr.s_addr = inet_addr(host.toRawUTF8());
-
-    int bytes_sent = sendto(sock, packet, sizeof(struct icmphdr), 0,
-                            reinterpret_cast<struct sockaddr*>(&dest_addr), sizeof(dest_addr));
-    if (bytes_sent < 0) {
-        osModule->setWarningMessage("Failed to send ICMP packet (need root?)", "ping");
-        close(sock);
-        return false;
-    }
-
-    // Receive ICMP reply
-    char recv_buffer[1024];
-    struct sockaddr_in from;
-    socklen_t fromlen = sizeof(from);
-    int bytes_received = recvfrom(sock, recv_buffer, sizeof(recv_buffer), 0,
-                                  reinterpret_cast<struct sockaddr*>(&from), &fromlen);
-
-    close(sock);
-
-    if (bytes_received > 0) {
-        DBG("Received ICMP reply from " << host);
+    if (result == 0)
+    {
+        osModule->clearWarning("ping");
+        DBG("Ping successful: " << host);
         return true;
     }
-    else if (bytes_received == 0) {
-        DBG("No data received");
+    else
+    {
+        osModule->setWarningMessage("Ping failed for " + host, "ping");
+        DBG("Ping failed: " << host << " (exit code " << result << ")");
         return false;
     }
-    else {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            DBG("Ping to " << host << " timed out");
-        } else {
-            DBG("Ping receive error: " << strerror(errno));
-        }
-        return false;
-    }
-
 #elif JUCE_MAC
     
     String command = String("ping -c 3 "+host);
